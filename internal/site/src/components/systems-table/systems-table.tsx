@@ -246,6 +246,8 @@ export default function SystemsTable() {
 			columnVisibility,
 		},
 		defaultColumn: {
+			// header clicks go ascending, descending, then unsorted, which shows the saved drag order
+			sortDescFirst: false,
 			invertSorting: true,
 			sortUndefined: "last",
 			minSize: 0,
