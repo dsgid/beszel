@@ -409,6 +409,8 @@ export interface UserSettings {
 	statusFilter?: "all" | "up" | "down" | "paused" | "pending"
 	viewMode?: "table" | "grid"
 	sortMode?: Array<{ id: string; desc: boolean }>
+	/** system ids in the user's custom dashboard order, used when no sort column is active */
+	systemOrder?: string[]
 	monitorCols?: Record<string, boolean>
 	monitorSortMode?: Array<{ id: string; desc: boolean }>
 	monitorSortModeSystem?: Array<{ id: string; desc: boolean }>
