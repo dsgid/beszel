@@ -577,7 +577,7 @@ function sortableHeader(context: HeaderContext<SystemRecord, unknown>) {
 		<Button
 			variant="ghost"
 			className={cn("h-9 px-3 flex duration-50", isSorted && "bg-accent/70 light:bg-accent text-accent-foreground/90")}
-			onClick={() => column.toggleSorting(column.getIsSorted() === "asc")}
+			onClick={() => column.toggleSorting()}
 		>
 			{Icon && <Icon className="me-2 size-4" />}
 			{name()}
