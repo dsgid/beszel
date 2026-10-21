@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { moveSystem, orderSystems } from "./system-order"
+import { moveSystem, orderSystems, seedOrder } from "./system-order"
 
 const sys = (id: string, name: string) => ({ id, name })
 const ids = (systems: { id: string }[]) => systems.map((s) => s.id)
@@ -91,4 +91,34 @@ test("moving then ordering reproduces the moved order", () => {
 	const moved = moveSystem(ids(orderSystems(all, [])), "x", "f")
 	expect(moved).toEqual(["a", "b", "c", "f", "x"])
 	expect(ids(orderSystems(all, moved))).toEqual(moved)
+})
+
+test("a seeded order shows the displayed systems first, as on screen", () => {
+	expect(seedOrder(["c", "a", "b"], ["a", "b", "c"])).toEqual(["c", "a", "b"])
+})
+
+test("a seeded order appends hidden systems in their existing order", () => {
+	// a filter shows c and a, sorted by a column. b, d and e are hidden
+	expect(seedOrder(["c", "a"], ["e", "a", "b", "d", "c"])).toEqual(["c", "a", "e", "b", "d"])
+})
+
+test("seeding with nothing displayed keeps the existing order", () => {
+	expect(seedOrder([], ["b", "a"])).toEqual(["b", "a"])
+})
+
+test("seeding returns a new array and leaves the inputs untouched", () => {
+	const displayed = ["b"]
+	const full = ["a", "b"]
+	const result = seedOrder(displayed, full)
+	expect(result).not.toBe(displayed)
+	expect(displayed).toEqual(["b"])
+	expect(full).toEqual(["a", "b"])
+})
+
+test("a drag after seeding lands where the user dropped it on screen", () => {
+	// sorted by a column the screen reads c, a, b. Dragging c onto b puts it last
+	const seeded = seedOrder(["c", "a", "b"], ["a", "b", "c", "d"])
+	expect(moveSystem(seeded, "c", "b")).toEqual(["a", "b", "c", "d"])
+	// dragging b onto c puts it first
+	expect(moveSystem(seeded, "b", "c")).toEqual(["b", "c", "a", "d"])
 })

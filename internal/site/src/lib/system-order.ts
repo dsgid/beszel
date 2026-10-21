@@ -47,3 +47,12 @@ export function moveSystem(fullOrderIds: readonly string[], activeId: string, ov
 	next.splice(to, 0, moved)
 	return next
 }
+
+/**
+ * Starting point for a custom order when the user drags while sorted by a column: the systems on
+ * screen in their displayed order, then every other system in its existing order. Returns a new array.
+ */
+export function seedOrder(displayedIds: readonly string[], fullOrderIds: readonly string[]): string[] {
+	const displayed = new Set(displayedIds)
+	return [...displayedIds, ...fullOrderIds.filter((id) => !displayed.has(id))]
+}
