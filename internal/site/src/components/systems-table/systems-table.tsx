@@ -81,10 +81,28 @@ type StatusFilter = "all" | SystemRecord["status"]
 const preloadSystemDetail = runOnce(() => import("@/components/routes/system.tsx"))
 
 const restrictToVerticalAxis: Modifier = ({ transform }) => ({ ...transform, x: 0 })
-const verticalAxisModifiers = [restrictToVerticalAxis]
+// a dragged item past the end of its list grows the scroll area, and auto-scroll then chases it forever
+const restrictToList: Modifier = ({ containerNodeRect, draggingNodeRect, transform }) => {
+	if (!containerNodeRect || !draggingNodeRect) return transform
+	return {
+		...transform,
+		x: Math.min(
+			Math.max(transform.x, containerNodeRect.left - draggingNodeRect.left),
+			containerNodeRect.right - draggingNodeRect.right
+		),
+		y: Math.min(
+			Math.max(transform.y, containerNodeRect.top - draggingNodeRect.top),
+			containerNodeRect.bottom - draggingNodeRect.bottom
+		),
+	}
+}
+const tableModifiers = [restrictToVerticalAxis, restrictToList]
+const gridModifiers = [restrictToList]
 // useSensor memoizes on the options object, so inline literals would give every row new listeners each render
 const pointerSensorOptions = { activationConstraint: { distance: 4 } }
 const keyboardSensorOptions = { coordinateGetter: sortableKeyboardCoordinates }
+// transform stays out of the card's hover transition, or the card animates its leftover drag offset after a drop
+const cardTransition = "box-shadow 200ms, opacity 200ms"
 
 export default function SystemsTable() {
 	const data = useStore($systems)
@@ -455,7 +473,7 @@ export default function SystemsTable() {
 			<DndContext
 				sensors={sensors}
 				collisionDetection={closestCenter}
-				modifiers={viewMode === "table" ? verticalAxisModifiers : undefined}
+				modifiers={viewMode === "table" ? tableModifiers : gridModifiers}
 				onDragEnd={handleDragEnd}
 			>
 				<SortableContext
@@ -693,8 +711,7 @@ const SystemCard = memo(
 			return (
 				<Card
 					ref={setNodeRef}
-					// the card's own transition-all would make the dragged card trail the pointer
-					style={{ transform: translate, transition: isDragging ? "none" : transition }}
+					style={{ transform: translate, transition: (!isDragging && transition) || cardTransition }}
 					onMouseEnter={preloadSystemDetail}
 					key={system.id}
 					className={cn(
