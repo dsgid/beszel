@@ -1,3 +1,22 @@
+import {
+	closestCenter,
+	DndContext,
+	type DragEndEvent,
+	KeyboardSensor,
+	type Modifier,
+	PointerSensor,
+	useDndContext,
+	useSensor,
+	useSensors,
+} from "@dnd-kit/core"
+import {
+	rectSortingStrategy,
+	SortableContext,
+	sortableKeyboardCoordinates,
+	useSortable,
+	verticalListSortingStrategy,
+} from "@dnd-kit/sortable"
+import { CSS } from "@dnd-kit/utilities"
 import { useLingui as useLinguiContext } from "@lingui/react"
 import { Trans, useLingui } from "@lingui/react/macro"
 import { useStore } from "@nanostores/react"
@@ -16,13 +35,14 @@ import {
 	useReactTable,
 	type VisibilityState,
 } from "@tanstack/react-table"
-import { useVirtualizer, type VirtualItem } from "@tanstack/react-virtual"
+import { defaultRangeExtractor, type Range, useVirtualizer, type VirtualItem } from "@tanstack/react-virtual"
 import {
 	ArrowDownIcon,
 	ArrowUpDownIcon,
 	ArrowUpIcon,
 	EyeIcon,
 	FilterIcon,
+	GripVerticalIcon,
 	LayoutGridIcon,
 	LayoutListIcon,
 	Settings2Icon,
@@ -46,6 +66,7 @@ import { TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/compon
 import { SystemStatus } from "@/lib/enums"
 import { queueUserSettings } from "@/lib/api"
 import { $downSystems, $pausedSystems, $systems, $upSystems, $userSettings } from "@/lib/stores"
+import { moveSystem, orderSystems, seedOrder } from "@/lib/system-order"
 import { cn, runOnce } from "@/lib/utils"
 import type { SystemRecord } from "@/types"
 import AlertButton from "../alerts/alert-button"
@@ -57,6 +78,9 @@ type ViewMode = "table" | "grid"
 type StatusFilter = "all" | SystemRecord["status"]
 
 const preloadSystemDetail = runOnce(() => import("@/components/routes/system.tsx"))
+
+const restrictToVerticalAxis: Modifier = ({ transform }) => ({ ...transform, x: 0 })
+const verticalAxisModifiers = [restrictToVerticalAxis]
 
 export default function SystemsTable() {
 	const data = useStore($systems)
@@ -76,6 +100,9 @@ export default function SystemsTable() {
 			$userSettings.get().sortMode ??
 			JSON.parse(sessionStorage.getItem("besz-sortMode") || "null") ?? [{ id: "system", desc: false }]
 	)
+	const [systemOrder, setSystemOrder] = useState<string[]>(
+		() => $userSettings.get().systemOrder ?? JSON.parse(localStorage.getItem("besz-systemOrder") || "[]")
+	)
 	const [columnFilters, setColumnFilters] = useState<ColumnFiltersState>([])
 	const [columnVisibility, setColumnVisibility] = useState<VisibilityState>(
 		() => $userSettings.get().cols ?? JSON.parse(localStorage.getItem("besz-cols") || "{}")
@@ -84,7 +111,7 @@ export default function SystemsTable() {
 	// Apply settings from server once they load (handles incognito / new devices)
 	const applied = useRef(new Set<string>())
 	useEffect(() => {
-		return subscribeKeys($userSettings, ["cols", "statusFilter", "viewMode", "sortMode"], (vals) => {
+		return subscribeKeys($userSettings, ["cols", "statusFilter", "viewMode", "sortMode", "systemOrder"], (vals) => {
 			if (!applied.current.has("cols") && vals.cols !== undefined) {
 				applied.current.add("cols")
 				setColumnVisibility(vals.cols)
@@ -100,6 +127,10 @@ export default function SystemsTable() {
 			if (!applied.current.has("sortMode") && vals.sortMode !== undefined) {
 				applied.current.add("sortMode")
 				setSorting(vals.sortMode)
+			}
+			if (!applied.current.has("systemOrder") && vals.systemOrder !== undefined) {
+				applied.current.add("systemOrder")
+				setSystemOrder(vals.systemOrder)
 			}
 		})
 	}, [])
@@ -159,6 +190,8 @@ export default function SystemsTable() {
 		return Object.values(pausedSystems) ?? []
 	}, [data, statusFilter])
 
+	const orderedData = useMemo(() => orderSystems(filteredData, systemOrder), [filteredData, systemOrder])
+
 	const [viewMode, setViewMode] = useState<ViewMode>(
 		() =>
 			$userSettings.get().viewMode ??
@@ -176,7 +209,7 @@ export default function SystemsTable() {
 	const columnDefs = useMemo(() => SystemsTableColumns(viewMode), [viewMode])
 
 	const table = useReactTable({
-		data: filteredData,
+		data: orderedData,
 		columns: columnDefs,
 		getCoreRowModel: getCoreRowModel(),
 		onSortingChange: handleSortingChange,
@@ -199,6 +232,36 @@ export default function SystemsTable() {
 	})
 
 	const rows = table.getRowModel().rows
+	const rowIds = useMemo(() => rows.map((row) => row.original.id), [rows])
+	// an empty sort leaves systems in the user's custom order
+	const customOrder = sorting.length === 0
+
+	const sensors = useSensors(
+		useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
+		useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
+	)
+
+	const handleDragEnd = useCallback(
+		({ active, over }: DragEndEvent) => {
+			if (!over || active.id === over.id) {
+				return
+			}
+			// the order covers every system, so a drag in a filtered view moves it within the full list
+			let order = orderSystems($systems.get(), systemOrder).map((system) => system.id)
+			if (!customOrder) {
+				// dropping while sorted by a column switches to custom, starting from the order on screen
+				order = seedOrder(rowIds, order)
+				handleSortingChange([])
+			}
+			const next = moveSystem(order, String(active.id), String(over.id))
+			setSystemOrder(next)
+			localStorage.setItem("besz-systemOrder", JSON.stringify(next))
+			$userSettings.setKey("systemOrder", next)
+			queueUserSettings({ systemOrder: next })
+		},
+		[systemOrder, customOrder, rowIds]
+	)
+
 	const columns = table.getAllColumns()
 	const visibleColumns = table.getVisibleLeafColumns()
 
@@ -300,6 +363,15 @@ export default function SystemsTable() {
 										</DropdownMenuLabel>
 										<DropdownMenuSeparator />
 										<div className="px-1 pb-1">
+											<DropdownMenuItem
+												onSelect={(e) => {
+													e.preventDefault()
+													handleSortingChange([])
+												}}
+											>
+												{customOrder ? <GripVerticalIcon className="me-2 size-4" /> : <span className="w-6"></span>}
+												<Trans>Custom</Trans>
+											</DropdownMenuItem>
 											{columns.map((column) => {
 												if (!column.getCanSort()) return null
 												let Icon = <span className="w-6"></span>
@@ -376,25 +448,37 @@ export default function SystemsTable() {
 	return (
 		<Card className="w-full px-3 py-5 sm:py-6 sm:px-6">
 			{CardHead}
-			{viewMode === "table" ? (
-				// table layout
-				<div className="rounded-md">
-					<AllSystemsTable table={table} rows={rows} colLength={visibleColumns.length} />
-				</div>
-			) : (
-				// grid layout
-				<div className="grid gap-4 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3">
-					{rows?.length ? (
-						rows.map((row) => {
-							return <SystemCard key={row.original.id} row={row} table={table} colLength={visibleColumns.length} />
-						})
+			<DndContext
+				sensors={sensors}
+				collisionDetection={closestCenter}
+				modifiers={viewMode === "table" ? verticalAxisModifiers : undefined}
+				onDragEnd={handleDragEnd}
+			>
+				<SortableContext
+					items={rowIds}
+					strategy={viewMode === "table" ? verticalListSortingStrategy : rectSortingStrategy}
+				>
+					{viewMode === "table" ? (
+						// table layout
+						<div className="rounded-md">
+							<AllSystemsTable table={table} rows={rows} colLength={visibleColumns.length} />
+						</div>
 					) : (
-						<div className="col-span-full text-center py-8">
-							<Trans>No systems found.</Trans>
+						// grid layout
+						<div className="grid gap-4 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3">
+							{rows?.length ? (
+								rows.map((row) => {
+									return <SystemCard key={row.original.id} row={row} table={table} colLength={visibleColumns.length} />
+								})
+							) : (
+								<div className="col-span-full text-center py-8">
+									<Trans>No systems found.</Trans>
+								</div>
+							)}
 						</div>
 					)}
-				</div>
-			)}
+				</SortableContext>
+			</DndContext>
 		</Card>
 	)
 }
@@ -404,11 +488,30 @@ const AllSystemsTable = memo(
 		// The virtualizer will need a reference to the scrollable container element
 		const scrollRef = useRef<HTMLDivElement>(null)
 
+		const { active } = useDndContext()
+		const activeIndex = active ? rows.findIndex((row) => row.original.id === active.id) : -1
+		// keep the dragged row mounted when it scrolls out of view. The rows in between stay too, because
+		// the spacer padding below assumes the rendered rows are contiguous
+		const rangeExtractor = useCallback(
+			(range: Range) =>
+				defaultRangeExtractor(
+					activeIndex < 0
+						? range
+						: {
+								...range,
+								startIndex: Math.min(range.startIndex, activeIndex),
+								endIndex: Math.max(range.endIndex, activeIndex),
+							}
+				),
+			[activeIndex]
+		)
+
 		const virtualizer = useVirtualizer<HTMLDivElement, HTMLTableRowElement>({
 			count: rows.length,
 			estimateSize: () => (rows.length > 10 ? 56 : 60),
 			getScrollElement: () => scrollRef.current,
 			overscan: 5,
+			rangeExtractor,
 		})
 		const virtualRows = virtualizer.getVirtualItems()
 
@@ -434,7 +537,7 @@ const AllSystemsTable = memo(
 									const row = rows[virtualRow.index] as Row<SystemRecord>
 									return (
 										<SystemTableRow
-											key={row.id}
+											key={row.original.id}
 											row={row}
 											virtualRow={virtualRow}
 											length={rows.length}
@@ -476,6 +579,25 @@ function SystemsTableHead({ table }: { table: TableType<SystemRecord> }) {
 	)
 }
 
+type SortableBindings = Pick<ReturnType<typeof useSortable>, "attributes" | "listeners" | "setActivatorNodeRef">
+
+function DragHandle({ attributes, listeners, setActivatorNodeRef }: SortableBindings) {
+	const { t } = useLingui()
+	return (
+		<Button
+			ref={setActivatorNodeRef}
+			variant="ghost"
+			size="icon"
+			aria-label={t`Drag to reorder`}
+			className="relative z-10 size-7 shrink-0 cursor-grab touch-none text-muted-foreground active:cursor-grabbing"
+			{...attributes}
+			{...listeners}
+		>
+			<GripVerticalIcon className="size-4" />
+		</Button>
+	)
+}
+
 const SystemTableRow = memo(
 	({
 		row,
@@ -489,29 +611,50 @@ const SystemTableRow = memo(
 	}) => {
 		const system = row.original
 		const { t } = useLingui()
+		const { attributes, listeners, setNodeRef, setActivatorNodeRef, transform, transition, isDragging } = useSortable({
+			id: system.id,
+		})
+		const translate = CSS.Translate.toString(transform)
 		return useMemo(() => {
 			return (
 				<TableRow
+					ref={setNodeRef}
+					style={{ transform: translate, transition }}
 					// data-state={row.getIsSelected() && "selected"}
 					className={cn("cursor-pointer transition-opacity relative safari:transform-3d", {
 						"opacity-50": system.status === SystemStatus.Paused,
+						"z-20 bg-muted shadow-md": isDragging,
 					})}
 				>
-					{row.getVisibleCells().map((cell) => (
-						<TableCell
-							key={cell.id}
-							style={{
-								width: cell.column.getSize(),
-								height: virtualRow.size,
-							}}
-							className="py-0 ps-4.5"
-						>
-							{flexRender(cell.column.columnDef.cell, cell.getContext())}
-						</TableCell>
-					))}
+					{row.getVisibleCells().map((cell) => {
+						const content = flexRender(cell.column.columnDef.cell, cell.getContext())
+						return (
+							<TableCell
+								key={cell.id}
+								style={{
+									width: cell.column.getSize(),
+									height: virtualRow.size,
+								}}
+								className="py-0 ps-4.5"
+							>
+								{cell.column.id === "system" ? (
+									<div className="flex items-center gap-1">
+										<DragHandle
+											attributes={attributes}
+											listeners={listeners}
+											setActivatorNodeRef={setActivatorNodeRef}
+										/>
+										{content}
+									</div>
+								) : (
+									content
+								)}
+							</TableCell>
+						)
+					})}
 				</TableRow>
 			)
-		}, [system, system.status, colLength, t])
+		}, [system, system.status, colLength, t, isDragging, translate, transition, attributes, listeners])
 	}
 )
 
@@ -519,16 +662,24 @@ const SystemCard = memo(
 	({ row, table, colLength }: { row: Row<SystemRecord>; table: TableType<SystemRecord>; colLength: number }) => {
 		const system = row.original
 		const { t } = useLingui()
+		const { attributes, listeners, setNodeRef, setActivatorNodeRef, transform, transition, isDragging } = useSortable({
+			id: system.id,
+		})
+		const translate = CSS.Translate.toString(transform)
 
 		return useMemo(() => {
 			return (
 				<Card
+					ref={setNodeRef}
+					// the card's own transition-all would make the dragged card trail the pointer
+					style={{ transform: translate, transition: isDragging ? "none" : transition }}
 					onMouseEnter={preloadSystemDetail}
 					key={system.id}
 					className={cn(
 						"cursor-pointer hover:shadow-md transition-all bg-transparent w-full dark:border-border duration-200 relative",
 						{
 							"opacity-50": system.status === SystemStatus.Paused,
+							"z-20 shadow-lg": isDragging,
 						}
 					)}
 				>
@@ -536,6 +687,7 @@ const SystemCard = memo(
 						<div className="flex items-center gap-1 w-full overflow-hidden">
 							<h3 className="text-primary/90 min-w-0 flex-1 gap-2.5 font-semibold">
 								<div className="flex items-center gap-2.5 min-w-0 flex-1">
+									<DragHandle attributes={attributes} listeners={listeners} setActivatorNodeRef={setActivatorNodeRef} />
 									<IndicatorDot system={system} />
 									<span className="text-[.95em]/normal tracking-normal text-primary/90 truncate">{system.name}</span>
 								</div>
@@ -584,6 +736,6 @@ const SystemCard = memo(
 					</Link>
 				</Card>
 			)
-		}, [system, colLength, t])
+		}, [system, colLength, t, isDragging, translate, transition, attributes, listeners])
 	}
 )
