@@ -1,7 +1,9 @@
 # DSG build of Beszel
 
-This fork carries DSG patches on top of an upstream release tag. The hub at
-beszel.dsg.id runs the image built by `build-and-push.sh`.
+This fork carries DSG patches and merges upstream `main`. The hub at
+beszel.dsg.id runs an image built by `build-and-push.sh`. The deployed commit,
+digest and rollback are recorded in dsgid/infrastructure at
+`configs/suite/suite-beszel-hub-ezqlmd/README.md`.
 
 ## Patches
 
@@ -17,11 +19,14 @@ git clone --branch <branch> https://github.com/dsgid/beszel /tmp/beszel-build
 /tmp/beszel-build/dsg/build-and-push.sh
 ```
 
-See the script header for what it needs and what it prints.
+See the script header for what it needs and what it prints. If upstream CI
+changes how it builds the web UI before `docker build`, mirror that in the
+script.
 
-## Upgrading to a new upstream release
+## Before deploying a newer commit
 
-Rebase the DSG commits onto the new upstream tag, rebuild, and deploy the new
-tag. Keep the base on a release tag, not upstream `main`: agents and the hub
-database must match a released version. If upstream CI changes how it builds
-the web UI before `docker build`, mirror that in the script.
+Upstream `main` runs ahead of the latest release and can add PocketBase
+migrations while `beszel.go` still reports the released version. Compare
+`internal/migrations` against the deployed commit. If it changed, back up the
+hub data first and treat rollback as restoring that backup, not as swapping the
+image back.

@@ -82,6 +82,9 @@ const preloadSystemDetail = runOnce(() => import("@/components/routes/system.tsx
 
 const restrictToVerticalAxis: Modifier = ({ transform }) => ({ ...transform, x: 0 })
 const verticalAxisModifiers = [restrictToVerticalAxis]
+// useSensor memoizes on the options object, so inline literals would give every row new listeners each render
+const pointerSensorOptions = { activationConstraint: { distance: 4 } }
+const keyboardSensorOptions = { coordinateGetter: sortableKeyboardCoordinates }
 
 export default function SystemsTable() {
 	const data = useStore($systems)
@@ -239,8 +242,8 @@ export default function SystemsTable() {
 	const customOrder = sorting.length === 0
 
 	const sensors = useSensors(
-		useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
-		useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
+		useSensor(PointerSensor, pointerSensorOptions),
+		useSensor(KeyboardSensor, keyboardSensorOptions)
 	)
 
 	const handleDragEnd = useCallback(
