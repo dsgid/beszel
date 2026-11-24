@@ -287,9 +287,12 @@ func buildSignozData(res signozResult, host string, includeDetails bool) (*syste
 	}
 	stats.SwapBytes = [2]uint64{uint64(swapTotal), uint64(swapUsed)}
 
-	// Disk: the root filesystem. Total counts used, free and the reserved blocks.
+	// Disk: the root filesystem. Total counts used, free and the reserved blocks. The percentage
+	// is used / (used + free), the same as the agent and df: reserved blocks are not usable, so
+	// dividing by the full total would read low (about 4 points on a 5 % reserve at 70 % usage).
 	var diskUsed, diskTotal float64
 	diskUsed, _ = res.sum("fs", map[string]string{"mountpoint": "/", "state": "used"})
+	diskFree, _ := res.sum("fs", map[string]string{"mountpoint": "/", "state": "free"})
 	for _, row := range res["fs"] {
 		if row.labels["mountpoint"] == "/" {
 			diskTotal += row.value
@@ -297,8 +300,8 @@ func buildSignozData(res signozResult, host string, includeDetails bool) (*syste
 	}
 	stats.DiskTotal = round2(diskTotal / gib)
 	stats.DiskUsed = round2(diskUsed / gib)
-	if diskTotal > 0 {
-		stats.DiskPct = round2(diskUsed / diskTotal * 100)
+	if diskUsed+diskFree > 0 {
+		stats.DiskPct = round2(diskUsed / (diskUsed + diskFree) * 100)
 	}
 
 	// Network and disk I/O arrive as bytes per second.
