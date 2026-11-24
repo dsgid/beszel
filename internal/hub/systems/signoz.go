@@ -20,12 +20,16 @@ import (
 	"io"
 	"math"
 	"net/http"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/henrygd/beszel"
 	"github.com/henrygd/beszel/internal/common"
+	"github.com/henrygd/beszel/internal/entities/container"
 	"github.com/henrygd/beszel/internal/entities/system"
+	"github.com/henrygd/beszel/internal/entities/systemd"
 	"github.com/henrygd/beszel/internal/hub/utils"
 )
 
@@ -113,7 +117,7 @@ func metricQuery(name, metric, timeAgg, spaceAgg, host string, groupBy ...string
 			}},
 			"filter":  map[string]string{"expression": fmt.Sprintf("host.name = '%s'", strings.ReplaceAll(host, "'", `\'`))},
 			"groupBy": group,
-			"limit":   100,
+			"limit":   1000,
 		},
 	}
 }
@@ -134,6 +138,22 @@ func (s *signozSource) query(ctx context.Context, host string) (signozResult, er
 		metricQuery("fs", "system.filesystem.usage", "latest", "sum", host, "mountpoint", "state"),
 		metricQuery("net", "system.network.io", "rate", "sum", host, "device", "direction"),
 		metricQuery("dio", "system.disk.io", "rate", "sum", host, "device", "direction"),
+		metricQuery("cpucore", "system.cpu.utilization", "avg", "avg", host, "cpu", "state"),
+		metricQuery("uptime", "system.uptime", "latest", "max", host),
+
+		// Containers (docker_stats receiver), one grouped query per metric.
+		metricQuery("ccpu", "container.cpu.usage.total", "rate", "sum", host, "container.name"),
+		metricQuery("cmem", "container.memory.usage.total", "latest", "sum", host, "container.name"),
+		metricQuery("crx", "container.network.io.usage.rx_bytes", "rate", "sum", host, "container.name"),
+		metricQuery("ctx", "container.network.io.usage.tx_bytes", "rate", "sum", host, "container.name"),
+		metricQuery("cup", "container.uptime", "latest", "max", host, "container.name", "container.id", "container.image.name"),
+		metricQuery("chealth", "container.state.health.status", "latest", "max", host, "container.name", "container.state.health.state"),
+
+		// systemd units (systemd receiver).
+		metricQuery("ustate", "systemd.unit.state", "latest", "max", host, "systemd.unit.name", "systemd.unit.active_state"),
+		metricQuery("ucpu", "systemd.service.cpu.time", "rate", "sum", host, "systemd.unit.name"),
+		metricQuery("umem", "systemd.service.memory.usage", "latest", "sum", host, "systemd.unit.name"),
+		metricQuery("umempeak", "systemd.service.memory.usage.max", "latest", "max", host, "systemd.unit.name"),
 	}
 	body, err := json.Marshal(map[string]any{
 		"schemaVersion":  "v1",
@@ -348,6 +368,9 @@ func buildSignozData(res signozResult, host string, includeDetails bool) (*syste
 		stats.LoadAvg[i] = round2(v)
 	}
 
+	stats.CpuCoresUsage = coreUsage(res["cpucore"])
+	uptime, _ := res.sum("uptime", nil)
+
 	cores, _ := res.sum("cores", nil)
 	info = system.Info{
 		Threads:        int(cores),
@@ -356,10 +379,13 @@ func buildSignozData(res signozResult, host string, includeDetails bool) (*syste
 		DiskPct:        stats.DiskPct,
 		BandwidthBytes: stats.Bandwidth[0] + stats.Bandwidth[1],
 		LoadAvg:        stats.LoadAvg,
+		Uptime:         uint64(uptime),
 		AgentVersion:   signozAgentVersion,
 	}
 
 	data := &system.CombinedData{Stats: stats, Info: info}
+	data.Containers = buildContainers(res)
+	data.SystemdServices, data.SystemdServicesUpdated = buildSystemdServices(res)
 	if includeDetails {
 		data.Details = &system.Details{
 			Hostname:    host,
@@ -371,6 +397,174 @@ func buildSignozData(res signozResult, host string, includeDetails bool) (*syste
 		}
 	}
 	return data, nil
+}
+
+// coreUsage returns the busy share of each core in percent, ordered by core number. Like the host
+// total it excludes iowait.
+func coreUsage(rows []signozRow) system.Uint8Slice {
+	idle := map[int]float64{}
+	for _, row := range rows {
+		if row.labels["state"] != "idle" && row.labels["state"] != "wait" {
+			continue
+		}
+		n, err := strconv.Atoi(strings.TrimPrefix(row.labels["cpu"], "cpu"))
+		if err != nil {
+			continue
+		}
+		idle[n] += row.value
+	}
+	cores := make([]int, 0, len(idle))
+	for n := range idle {
+		cores = append(cores, n)
+	}
+	sort.Ints(cores)
+	out := make(system.Uint8Slice, 0, len(cores))
+	for _, n := range cores {
+		out = append(out, uint8(math.Round(math.Min(100, math.Max(0, (1-idle[n])*100)))))
+	}
+	return out
+}
+
+// dockerUptime formats a container uptime like the status column of docker ps ("Up 7 days").
+func dockerUptime(seconds float64) string {
+	d := time.Duration(seconds) * time.Second
+	plural := func(n int, unit string) string {
+		if n == 1 {
+			return fmt.Sprintf("Up %d %s", n, unit)
+		}
+		return fmt.Sprintf("Up %d %ss", n, unit)
+	}
+	switch {
+	case d >= 24*time.Hour:
+		return plural(int(d/(24*time.Hour)), "day")
+	case d >= time.Hour:
+		return plural(int(d/time.Hour), "hour")
+	case d >= time.Minute:
+		return plural(int(d/time.Minute), "minute")
+	default:
+		return plural(int(d/time.Second), "second")
+	}
+}
+
+// buildContainers maps docker_stats metrics to the container list an agent would send. Ports have no
+// OTel source and stay empty. Containers are ordered by name so the output is stable.
+func buildContainers(res signozResult) []*container.Stats {
+	byName := map[string]*container.Stats{}
+	get := func(name string) *container.Stats {
+		c := byName[name]
+		if c == nil {
+			c = &container.Stats{Name: name}
+			byName[name] = c
+		}
+		return c
+	}
+	for _, row := range res["cup"] {
+		name := row.labels["container.name"]
+		if name == "" {
+			continue
+		}
+		c := get(name)
+		c.Id = truncate(row.labels["container.id"], 12)
+		c.Image = row.labels["container.image.name"]
+		c.Status = dockerUptime(row.value)
+	}
+	for _, row := range res["ccpu"] {
+		if row.labels["container.name"] != "" {
+			get(row.labels["container.name"]).Cpu = round2(row.value / 1e9 * 100) // ns of CPU per second to percent of one core, like docker stats
+		}
+	}
+	for _, row := range res["cmem"] {
+		if row.labels["container.name"] != "" {
+			get(row.labels["container.name"]).Mem = round2(row.value / (1 << 20))
+		}
+	}
+	for _, row := range res["ctx"] {
+		if row.labels["container.name"] != "" {
+			get(row.labels["container.name"]).Bandwidth[0] = uint64(row.value)
+		}
+	}
+	for _, row := range res["crx"] {
+		if row.labels["container.name"] != "" {
+			get(row.labels["container.name"]).Bandwidth[1] = uint64(row.value)
+		}
+	}
+	for _, row := range res["chealth"] {
+		if row.value < 1 {
+			continue
+		}
+		if h, ok := container.DockerHealthStrings[row.labels["container.state.health.state"]]; ok && row.labels["container.name"] != "" {
+			get(row.labels["container.name"]).Health = h
+		}
+	}
+	names := make([]string, 0, len(byName))
+	for name := range byName {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	out := make([]*container.Stats, 0, len(names))
+	for _, name := range names {
+		out = append(out, byName[name])
+	}
+	return out
+}
+
+// buildSystemdServices maps the systemd receiver's metrics to the unit list an agent would send. The
+// receiver reports every *.service unit file; units that are plainly inactive are left out, as an
+// agent lists only loaded units. The sub state has no OTel source, so it is derived from the state,
+// which shows a finished oneshot service as running. CPU peak is not available and repeats the
+// current value. The second result marks the snapshot as fresh, so units that vanished are removed.
+func buildSystemdServices(res signozResult) ([]*systemd.Service, bool) {
+	if len(res["ustate"]) == 0 {
+		return nil, false
+	}
+	byName := map[string]*systemd.Service{}
+	for _, row := range res["ustate"] {
+		name := row.labels["systemd.unit.name"]
+		state := row.labels["systemd.unit.active_state"]
+		if name == "" || row.value < 1 || state == "inactive" {
+			continue
+		}
+		svc := &systemd.Service{Name: name, State: systemd.ParseServiceStatus(state)}
+		switch state {
+		case "active", "reloading", "activating", "deactivating":
+			svc.Sub = systemd.SubStateRunning
+		case "failed":
+			svc.Sub = systemd.SubStateFailed
+		default:
+			svc.Sub = systemd.SubStateUnknown
+		}
+		byName[name] = svc
+	}
+	for _, row := range res["ucpu"] {
+		if svc := byName[row.labels["systemd.unit.name"]]; svc != nil {
+			svc.Cpu = round2(row.value / 1e6 * 100) // microseconds of CPU per second to percent of one core
+		}
+	}
+	for _, row := range res["umem"] {
+		if svc := byName[row.labels["systemd.unit.name"]]; svc != nil {
+			svc.Mem = uint64(math.Max(0, row.value))
+		}
+	}
+	for _, row := range res["umempeak"] {
+		if svc := byName[row.labels["systemd.unit.name"]]; svc != nil {
+			svc.MemPeak = uint64(math.Max(0, row.value))
+		}
+	}
+	names := make([]string, 0, len(byName))
+	for name := range byName {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	out := make([]*systemd.Service, 0, len(names))
+	for _, name := range names {
+		svc := byName[name]
+		svc.CpuPeak = svc.Cpu
+		if svc.MemPeak < svc.Mem {
+			svc.MemPeak = svc.Mem
+		}
+		out = append(out, svc)
+	}
+	return out, true
 }
 
 // fetch returns the latest host stats for a system.

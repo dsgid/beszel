@@ -12,8 +12,9 @@ digest and rollback are recorded in dsgid/infrastructure at
   needs no schema change and stock Beszel ignores it. View, then Sort By, then
   Custom brings the saved order back after sorting by a column.
 
-- SigNoz host stats. A system listed in `SIGNOZ_SYSTEMS` reads CPU, memory, swap,
-  root disk, disk I/O, network and load from SigNoz instead of a beszel-agent. The
+- SigNoz host stats. A system listed in `SIGNOZ_SYSTEMS` reads CPU (total and per
+  core), memory, swap, root disk, disk I/O, network, load, uptime, Docker containers
+  and systemd services from SigNoz instead of a beszel-agent. The
   host OpenTelemetry collectors already ship these (see
   `configs/host-metrics` in dsgid/infrastructure). Code: `internal/hub/systems/signoz.go`.
   Unlisted systems keep their agent, and a listed system ignores its agent.
@@ -27,10 +28,16 @@ digest and rollback are recorded in dsgid/infrastructure at
   The host collector must export `system.memory.limit` (the machine total). Without it
   the system reads as down with an error that says so.
 
-  Not available from SigNoz, so these tabs stay empty for a listed system:
-  containers, temperatures, SMART, systemd, ZFS, GPU, extra filesystems, uptime,
-  and the network monitors (the readyz probes and their loss alerts) that an
-  agent runs.
+  Containers need the collector's `docker_stats` receiver and systemd needs its
+  `systemd` receiver (both in `configs/host-metrics`). Gaps against an agent: the
+  container ports column has no OTel source; a systemd unit's sub state is derived
+  from its active state and its CPU peak repeats the current value; units that are
+  plainly inactive are left out; stats arrive every 30 s, so there is no realtime
+  1 s view.
+
+  Not available from SigNoz, so these stay empty for a listed system: temperatures,
+  SMART, ZFS, GPU, fans, battery, extra filesystems, and the network monitors (the
+  readyz probes and their loss alerts) that an agent runs.
 
 ## Build and push
 
