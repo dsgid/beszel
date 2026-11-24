@@ -215,7 +215,7 @@ func (sys *System) update() error {
 	}
 
 	// Fetch and save SMART devices when system first comes online or at intervals
-	if backgroundSmartFetchEnabled() && sys.detailsFetched.Load() {
+	if backgroundSmartFetchEnabled() && sys.detailsFetched.Load() && !sys.fromSignoz() {
 		if sys.smartInterval <= 0 {
 			sys.smartInterval = time.Hour
 		}
@@ -229,7 +229,7 @@ func (sys *System) update() error {
 	}
 
 	// Fetch and save ZFS pool details when system first comes online or at intervals
-	if backgroundZfsFetchEnabled() && sys.detailsFetched.Load() && sys.supportsZfsData() {
+	if backgroundZfsFetchEnabled() && sys.detailsFetched.Load() && sys.supportsZfsData() && !sys.fromSignoz() {
 		if sys.zfsInterval <= 0 {
 			sys.zfsInterval = time.Hour
 		}

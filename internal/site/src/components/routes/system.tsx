@@ -1,6 +1,6 @@
 import { memo, useState } from "react"
 import { Trans } from "@lingui/react/macro"
-import { compareSemVer, parseSemVer, supportsNetworkMonitors } from "@/lib/utils"
+import { compareSemVer, isSignozSystem, parseSemVer, supportsNetworkMonitors } from "@/lib/utils"
 import { SystemStatus } from "@/lib/enums"
 import type { GPUData } from "@/types"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
@@ -69,7 +69,8 @@ export default memo(function SystemDetail({ id }: { id: string }) {
 	}
 
 	const hasContainers = containerData.length > 0
-	const maybeHasSmartData = compareSemVer(chartData.agentVersion, SEMVER_0_15_0) >= 0
+	// SigNoz has no SMART data, and any rows left from an earlier agent would be stale
+	const maybeHasSmartData = !isSignozSystem(system) && compareSemVer(chartData.agentVersion, SEMVER_0_15_0) >= 0
 	const hasContainersTable = hasContainers && compareSemVer(chartData.agentVersion, SEMVER_0_14_0) >= 0
 	const hasSystemd = system.info.sv
 	const hasGpu = hasGpuData || hasGpuPowerData

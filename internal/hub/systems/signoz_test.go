@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/henrygd/beszel"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -42,7 +44,7 @@ func fringeFixture(t *testing.T) []byte {
 		signozResultSet("load1", nil, [][]any{{1.5}}),
 		signozResultSet("load5", nil, [][]any{{1.25}}),
 		signozResultSet("load15", nil, [][]any{{1.0}}),
-		signozResultSet("fs", []string{"mountpoint", "state"}, [][]any{{"/", "used", 187810529280.0}, {"/", "free", 143885492224.0}, {"/", "reserved", 16777216.0}, {"/boot", "used", 264437760.0}}),
+		signozResultSet("fs", []string{"mountpoint", "state"}, [][]any{{"/", "used", 72214413312.0}, {"/", "free", 27958063104.0}, {"/", "reserved", 5277655813.0}, {"/boot", "used", 264437760.0}}),
 		signozResultSet("net", []string{"device", "direction"}, [][]any{{"ens3", "receive", 212605.0}, {"ens3", "transmit", 33798.0}, {"wt0", "receive", 9198.0}, {"wt0", "transmit", 8966.0}}),
 		signozResultSet("dio", []string{"device", "direction"}, [][]any{{"sda", "read", 1000.0}, {"sda1", "read", 1000.0}, {"sda", "write", 2000.0}, {"sda1", "write", 2000.0}, {"nvme0n1", "read", 10.0}, {"nvme0n1p1", "read", 10.0}}),
 	)
@@ -64,8 +66,10 @@ func TestBuildSignozData(t *testing.T) {
 	assert.Equal(t, [2]uint64{4 << 30, 1 << 30}, data.Stats.SwapBytes)
 
 	// Only the root filesystem counts, and reserved blocks are part of the total.
-	assert.InDelta(t, (187810529280.0+143885492224+16777216)/gib, data.Stats.DiskTotal, 0.01)
-	assert.InDelta(t, 187810529280.0/gib, data.Stats.DiskUsed, 0.01)
+	assert.InDelta(t, (72214413312.0+27958063104+5277655813)/gib, data.Stats.DiskTotal, 0.01)
+	assert.InDelta(t, 72214413312.0/gib, data.Stats.DiskUsed, 0.01)
+	// used / (used + free), as df and the agent report (Central B read 72.09 % from its agent).
+	assert.InDelta(t, 72.09, data.Stats.DiskPct, 0.01)
 
 	assert.Equal(t, [2]uint64{33798 + 8966, 212605 + 9198}, data.Stats.Bandwidth)
 	assert.Equal(t, uint64(33798+8966+212605+9198), data.Info.BandwidthBytes)
@@ -164,4 +168,20 @@ func TestSignozSystemsEnv(t *testing.T) {
 	assert.False(t, ok, "unlisted systems keep their agent")
 	_, ok = (*signozSource)(nil).hostFor("Fringe")
 	assert.False(t, ok)
+}
+
+func TestFromSignoz(t *testing.T) {
+	res, err := parseSignozResponse(fringeFixture(t))
+	require.NoError(t, err)
+	data, err := buildSignozData(res, "dsg-fringe", false)
+	require.NoError(t, err)
+
+	sys := &System{data: data}
+	assert.True(t, sys.fromSignoz())
+	assert.Contains(t, data.Info.AgentVersion, "-signoz")
+	assert.True(t, strings.HasPrefix(data.Info.AgentVersion, beszel.Version), "the UI parses the version before the dash")
+
+	data.Info.AgentVersion = beszel.Version
+	assert.False(t, sys.fromSignoz(), "agent data is not SigNoz data")
+	assert.False(t, (&System{}).fromSignoz(), "no data yet")
 }
