@@ -514,12 +514,14 @@ func buildContainers(res signozResult) []*container.Stats {
 // which shows a finished oneshot service as running. CPU peak is not available and repeats the
 // current value. The second result marks the snapshot as fresh, so units that vanished are removed.
 func buildSystemdServices(res signozResult) ([]*systemd.Service, bool) {
+	// Agents name a unit without its ".service" suffix, and existing records use that name.
+	unit := func(row signozRow) string { return strings.TrimSuffix(row.labels["systemd.unit.name"], ".service") }
 	if len(res["ustate"]) == 0 {
 		return nil, false
 	}
 	byName := map[string]*systemd.Service{}
 	for _, row := range res["ustate"] {
-		name := row.labels["systemd.unit.name"]
+		name := unit(row)
 		state := row.labels["systemd.unit.active_state"]
 		if name == "" || row.value < 1 || state == "inactive" {
 			continue
@@ -536,17 +538,17 @@ func buildSystemdServices(res signozResult) ([]*systemd.Service, bool) {
 		byName[name] = svc
 	}
 	for _, row := range res["ucpu"] {
-		if svc := byName[row.labels["systemd.unit.name"]]; svc != nil {
+		if svc := byName[unit(row)]; svc != nil {
 			svc.Cpu = round2(row.value / 1e6 * 100) // microseconds of CPU per second to percent of one core
 		}
 	}
 	for _, row := range res["umem"] {
-		if svc := byName[row.labels["systemd.unit.name"]]; svc != nil {
+		if svc := byName[unit(row)]; svc != nil {
 			svc.Mem = uint64(math.Max(0, row.value))
 		}
 	}
 	for _, row := range res["umempeak"] {
-		if svc := byName[row.labels["systemd.unit.name"]]; svc != nil {
+		if svc := byName[unit(row)]; svc != nil {
 			svc.MemPeak = uint64(math.Max(0, row.value))
 		}
 	}

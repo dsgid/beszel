@@ -78,7 +78,7 @@ func TestBuildSystemdServices(t *testing.T) {
 	got, fresh := buildSystemdServices(res)
 	assert.True(t, fresh)
 	require.Len(t, got, 2)
-	assert.Equal(t, "bad.service", got[0].Name)
+	assert.Equal(t, "bad", got[0].Name)
 	assert.Equal(t, systemd.StatusFailed, got[0].State)
 	assert.Equal(t, systemd.SubStateFailed, got[0].Sub)
 	ssh := got[1]
