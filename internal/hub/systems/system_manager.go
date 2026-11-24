@@ -51,6 +51,7 @@ type SystemManager struct {
 	sshConfig           *ssh.ClientConfig                     // SSH client configuration for system connections
 	smartFetchMap       *expirymap.ExpiryMap[smartFetchState] // Stores last SMART fetch time/result; TTL is only for cleanup
 	zfsFetchMap         *expirymap.ExpiryMap[zfsFetchState]   // Stores last ZFS fetch time/result; TTL is only for cleanup
+	signoz              *signozSource                         // DSG: reads host stats from SigNoz for the systems it lists; nil when unconfigured
 	realtimeMutex       sync.Mutex                            // Protects all realtime worker and subscription state
 	activeSubscriptions map[string]*subscriptionInfo          // Realtime subscriptions keyed by system ID
 	realtimeWorkerStop  chan struct{}                         // Stops the current realtime worker generation
@@ -80,6 +81,7 @@ func NewSystemManager(hub hubLike) *SystemManager {
 		hub:                 hub,
 		smartFetchMap:       expirymap.New[smartFetchState](time.Hour),
 		zfsFetchMap:         expirymap.New[zfsFetchState](time.Hour),
+		signoz:              newSignozSourceFromEnv(),
 		activeSubscriptions: make(map[string]*subscriptionInfo),
 	}
 	sm.ctx, sm.cancel = context.WithCancel(context.Background())

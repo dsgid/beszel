@@ -12,6 +12,26 @@ digest and rollback are recorded in dsgid/infrastructure at
   needs no schema change and stock Beszel ignores it. View, then Sort By, then
   Custom brings the saved order back after sorting by a column.
 
+- SigNoz host stats. A system listed in `SIGNOZ_SYSTEMS` reads CPU, memory, swap,
+  root disk, disk I/O, network and load from SigNoz instead of a beszel-agent. The
+  host OpenTelemetry collectors already ship these (see
+  `configs/host-metrics` in dsgid/infrastructure). Code: `internal/hub/systems/signoz.go`.
+  Unlisted systems keep their agent, and a listed system ignores its agent.
+
+  | Env | Value |
+  | --- | --- |
+  | `SIGNOZ_URL` | Base URL, for example `https://signoz.dsg.id` |
+  | `SIGNOZ_API_KEY` | SigNoz API key with the Viewer role |
+  | `SIGNOZ_SYSTEMS` | `System name=host.name` pairs, for example `Fringe=dsg-fringe,Beacon=dsg-beacon` |
+
+  The host collector must export `system.memory.limit` (the machine total). Without it
+  the system reads as down with an error that says so.
+
+  Not available from SigNoz, so these tabs stay empty for a listed system:
+  containers, temperatures, SMART, systemd, ZFS, GPU, extra filesystems, uptime,
+  and the network monitors (the readyz probes and their loss alerts) that an
+  agent runs.
+
 ## Build and push
 
 ```sh
