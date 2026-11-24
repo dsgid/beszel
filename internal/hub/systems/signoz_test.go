@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/henrygd/beszel"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -166,4 +168,20 @@ func TestSignozSystemsEnv(t *testing.T) {
 	assert.False(t, ok, "unlisted systems keep their agent")
 	_, ok = (*signozSource)(nil).hostFor("Fringe")
 	assert.False(t, ok)
+}
+
+func TestFromSignoz(t *testing.T) {
+	res, err := parseSignozResponse(fringeFixture(t))
+	require.NoError(t, err)
+	data, err := buildSignozData(res, "dsg-fringe", false)
+	require.NoError(t, err)
+
+	sys := &System{data: data}
+	assert.True(t, sys.fromSignoz())
+	assert.Contains(t, data.Info.AgentVersion, "-signoz")
+	assert.True(t, strings.HasPrefix(data.Info.AgentVersion, beszel.Version), "the UI parses the version before the dash")
+
+	data.Info.AgentVersion = beszel.Version
+	assert.False(t, sys.fromSignoz(), "agent data is not SigNoz data")
+	assert.False(t, (&System{}).fromSignoz(), "no data yet")
 }

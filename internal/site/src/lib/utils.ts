@@ -441,8 +441,13 @@ export function compareSemVer(a: SemVer, b: SemVer) {
 
 const MIN_NETWORK_MONITOR_AGENT_VERSION = parseSemVer("0.20.0")
 
+/** True when the hub read this system's stats from SigNoz (DSG patch), so no agent supplied them. */
+export function isSignozSystem(system: Pick<SystemRecord, "info">) {
+	return !!system.info?.v?.endsWith("-signoz")
+}
+
 export function supportsNetworkMonitors(system: Pick<SystemRecord, "info">) {
-	return compareSemVer(parseSemVer(system.info?.v), MIN_NETWORK_MONITOR_AGENT_VERSION) >= 0
+	return !isSignozSystem(system) && compareSemVer(parseSemVer(system.info?.v), MIN_NETWORK_MONITOR_AGENT_VERSION) >= 0
 }
 
 // biome-ignore lint/suspicious/noExplicitAny: any is used to allow any function to be passed in

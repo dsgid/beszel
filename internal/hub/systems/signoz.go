@@ -23,13 +23,17 @@ import (
 	"strings"
 	"time"
 
+	"github.com/henrygd/beszel"
 	"github.com/henrygd/beszel/internal/common"
 	"github.com/henrygd/beszel/internal/entities/system"
 	"github.com/henrygd/beszel/internal/hub/utils"
 )
 
+// signozAgentVersion is reported as the agent version of a SigNoz-sourced system. It stays a valid
+// version so the UI's version gates still pass; the suffix tells the UI which sections have no data.
+var signozAgentVersion = beszel.Version + "-signoz"
+
 const (
-	signozAgentVersion = "signoz"
 	// signozWindow is how far back the latest sample is searched. The hostmetrics interval is 30s
 	// and SigNoz alerts on five silent minutes, so a shorter window would flap.
 	signozWindow         = 5 * time.Minute
@@ -395,4 +399,9 @@ func (sys *System) fetchDataFromSignoz(options common.DataRequestOptions) (data 
 	defer cancel()
 	data, err = sys.manager.signoz.fetch(ctx, host, options.IncludeDetails)
 	return data, true, err
+}
+
+// fromSignoz reports whether the last data for this system came from SigNoz instead of an agent.
+func (sys *System) fromSignoz() bool {
+	return sys.data != nil && sys.data.Info.AgentVersion == signozAgentVersion
 }
