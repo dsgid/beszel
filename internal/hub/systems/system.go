@@ -858,6 +858,9 @@ func (sys *System) fetchDataViaWebSocket(options common.DataRequestOptions) (*sy
 
 // FetchContainerInfoFromAgent fetches container info from the agent
 func (sys *System) FetchContainerInfoFromAgent(containerID string) (string, error) {
+	if _, ok := sys.signozHost(); ok {
+		return fmt.Sprintf("{\"info\":%q}", signozNoDetails), nil
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	var result string
@@ -867,6 +870,9 @@ func (sys *System) FetchContainerInfoFromAgent(containerID string) (string, erro
 
 // FetchContainerLogsFromAgent fetches container logs from the agent
 func (sys *System) FetchContainerLogsFromAgent(containerID string) (string, error) {
+	if out, handled, err := sys.signozContainerLogs(containerID); handled {
+		return out, err
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	var result string
@@ -876,6 +882,9 @@ func (sys *System) FetchContainerLogsFromAgent(containerID string) (string, erro
 
 // FetchSystemdInfoFromAgent fetches detailed systemd service information from the agent
 func (sys *System) FetchSystemdInfoFromAgent(serviceName string) (systemd.ServiceDetails, error) {
+	if _, ok := sys.signozHost(); ok {
+		return systemd.ServiceDetails{"Info": signozNoDetails}, nil
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	var result systemd.ServiceDetails
@@ -885,6 +894,9 @@ func (sys *System) FetchSystemdInfoFromAgent(serviceName string) (systemd.Servic
 
 // FetchSystemdLogsFromAgent fetches recent journal entries for a systemd service from the agent.
 func (sys *System) FetchSystemdLogsFromAgent(serviceName string) (string, error) {
+	if out, handled, err := sys.signozSystemdLogs(serviceName); handled {
+		return out, err
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	var result string
