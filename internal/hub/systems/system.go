@@ -805,6 +805,9 @@ func (sys *System) setAgentVersion(v semver.Version) {
 // Each fetch decodes into a new struct: CBOR leaves fields the agent omits
 // untouched, and real-time and regular updates may fetch concurrently.
 func (sys *System) fetchDataFromAgent(options common.DataRequestOptions) (*system.CombinedData, error) {
+	if data, handled, err := sys.fetchDataFromSignoz(options); handled {
+		return data, err
+	}
 	if sys.WsConn != nil && sys.WsConn.IsConnected() {
 		wsData, err := sys.fetchDataViaWebSocket(options)
 		if err == nil {
