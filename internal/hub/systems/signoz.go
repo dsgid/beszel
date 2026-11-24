@@ -380,6 +380,7 @@ func buildSignozData(res signozResult, host string, includeDetails bool) (*syste
 		BandwidthBytes: stats.Bandwidth[0] + stats.Bandwidth[1],
 		LoadAvg:        stats.LoadAvg,
 		Uptime:         uint64(uptime),
+		SystemdLogs:    true, // the journald receiver feeds the unit log view
 		AgentVersion:   signozAgentVersion,
 	}
 
@@ -568,6 +569,150 @@ func buildSystemdServices(res signozResult) ([]*systemd.Service, bool) {
 	}
 	return out, true
 }
+
+// logRows decodes the rows of a raw logs response. The shape is not documented for v5, so the parser
+// accepts the timestamp and body at the row level or under "data", and reports what it saw otherwise.
+func logRows(raw []byte) ([]logLine, error) {
+	var parsed struct {
+		Data struct {
+			Data struct {
+				Results []struct {
+					Rows []struct {
+						Timestamp any            `json:"timestamp"`
+						Data      map[string]any `json:"data"`
+					} `json:"rows"`
+				} `json:"results"`
+			} `json:"data"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		return nil, fmt.Errorf("decode signoz logs response: %w", err)
+	}
+	var out []logLine
+	for _, r := range parsed.Data.Data.Results {
+		for _, row := range r.Rows {
+			body, _ := row.Data["body"].(string)
+			ts := row.Timestamp
+			if ts == nil {
+				ts = row.Data["timestamp"]
+			}
+			out = append(out, logLine{ts: fmt.Sprint(ts), body: body})
+		}
+	}
+	return out, nil
+}
+
+type logLine struct{ ts, body string }
+
+// formatLogs renders lines oldest first, one per entry, like the text an agent returns.
+func formatLogs(lines []logLine) string {
+	var b strings.Builder
+	for i := len(lines) - 1; i >= 0; i-- { // the query returns newest first
+		l := lines[i]
+		b.WriteString(strings.TrimRight(l.ts+" "+strings.TrimRight(l.body, "\r\n"), " "))
+		b.WriteByte('\n')
+	}
+	return b.String()
+}
+
+// escapeFilter makes a value safe inside a single-quoted filter literal.
+func escapeFilter(v string) string {
+	return strings.NewReplacer(`\`, `\\`, `'`, `\'`).Replace(v)
+}
+
+const signozLogLimit = 200
+
+// logs returns the newest log lines matching a filter expression.
+func (s *signozSource) logs(ctx context.Context, filter string) (string, error) {
+	end := s.now()
+	start := end.Add(-24 * time.Hour)
+	body, err := json.Marshal(map[string]any{
+		"schemaVersion": "v1",
+		"start":         start.UnixMilli(),
+		"end":           end.UnixMilli(),
+		"requestType":   "raw",
+		"compositeQuery": map[string]any{"queries": []map[string]any{{
+			"type": "builder_query",
+			"spec": map[string]any{
+				"name":   "A",
+				"signal": "logs",
+				"filter": map[string]string{"expression": filter},
+				"order":  []map[string]any{{"key": map[string]string{"name": "timestamp"}, "direction": "desc"}},
+				"limit":  signozLogLimit,
+			},
+		}}},
+	})
+	if err != nil {
+		return "", err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.url+"/api/v5/query_range", bytes.NewReader(body))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("SIGNOZ-API-KEY", s.key)
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("signoz request: %w", err)
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+	if err != nil {
+		return "", err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("signoz returned %d: %s", resp.StatusCode, truncate(string(raw), 300))
+	}
+	lines, err := logRows(raw)
+	if err != nil {
+		return "", fmt.Errorf("%w: %s", err, truncate(string(raw), 300))
+	}
+	if len(lines) == 0 {
+		return "", nil
+	}
+	return formatLogs(lines), nil
+}
+
+// signozHost returns the SigNoz host.name of the system when it reads from SigNoz.
+func (sys *System) signozHost() (string, bool) {
+	if sys.manager.signoz == nil {
+		return "", false
+	}
+	record, err := sys.getRecord(sys.manager.hub)
+	if err != nil {
+		return "", false
+	}
+	return sys.manager.signoz.hostFor(record.GetString("name"))
+}
+
+// signozContainerLogs serves container logs from SigNoz. Records hold the 12 character id and the
+// logs carry the full id, so the filter matches the prefix.
+func (sys *System) signozContainerLogs(containerID string) (string, bool, error) {
+	host, ok := sys.signozHost()
+	if !ok {
+		return "", false, nil
+	}
+	ctx, cancel := context.WithTimeout(sys.ctx, signozRequestTimeout)
+	defer cancel()
+	filter := fmt.Sprintf("resource.host.name = '%s' AND resource.container.id LIKE '%s%%'", escapeFilter(host), escapeFilter(containerID))
+	out, err := sys.manager.signoz.logs(ctx, filter)
+	return out, true, err
+}
+
+// signozSystemdLogs serves a unit's journal entries from SigNoz. Records drop the ".service" suffix.
+func (sys *System) signozSystemdLogs(serviceName string) (string, bool, error) {
+	host, ok := sys.signozHost()
+	if !ok {
+		return "", false, nil
+	}
+	ctx, cancel := context.WithTimeout(sys.ctx, signozRequestTimeout)
+	defer cancel()
+	filter := fmt.Sprintf("resource.host.name = '%s' AND attribute.journald._SYSTEMD_UNIT = '%s.service'", escapeFilter(host), escapeFilter(serviceName))
+	out, err := sys.manager.signoz.logs(ctx, filter)
+	return out, true, err
+}
+
+const signozNoDetails = "Not available for hosts read through SigNoz: it needs a host agent."
 
 // fetch returns the latest host stats for a system.
 func (s *signozSource) fetch(ctx context.Context, host string, includeDetails bool) (*system.CombinedData, error) {
